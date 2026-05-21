@@ -227,7 +227,14 @@ void ASFWireHologram::ConfigureActor(AFGBuildable* inBuildable) const
 		UE_LOG(LogSmartFoundations, Warning, TEXT(" SFWireHologram::ConfigureActor - inBuildable is not a wire!"));
 		return;
 	}
-	
+
+	if (Tags.Contains(FName(TEXT("SF_PowerAutoConnectChild"))))
+	{
+		UE_LOG(LogSmartFoundations, VeryVerbose, TEXT(" SFWireHologram::ConfigureActor - Destroying temporary Smart power child wire; deferred system will create the real wire"));
+		Wire->Destroy();
+		return;
+	}
+
 	// Check if this is a pole-to-building wire (target is already a buildable, not a hologram)
 	UFGCircuitConnectionComponent* StoredConn1 = GetConnection(1);
 	if (StoredConn1 && StoredConn1->GetOwner())

@@ -1031,6 +1031,13 @@ void FSFPowerAutoConnectManager::OnPowerPoleBuilt(AFGBuildablePowerPole* BuiltPo
 		return;
 	}
 
+	UWorld* World = BuiltPole->GetWorld();
+	if (World && World->GetNetMode() == NM_Client)
+	{
+		UE_LOG(LogSmartFoundations, VeryVerbose, TEXT("⚡ OnPowerPoleBuilt: Skipping client-side wire creation for %s"), *BuiltPole->GetName());
+		return;
+	}
+
 	UE_LOG(LogSmartFoundations, Log, TEXT("⚡ OnPowerPoleBuilt: Processing built pole %s"), *BuiltPole->GetName());
 
 	// Check if this pole was built from the grid system
