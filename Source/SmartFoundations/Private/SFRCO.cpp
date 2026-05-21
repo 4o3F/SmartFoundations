@@ -3,8 +3,6 @@
 #include "Hologram/FGHologram.h"
 #include "Subsystem/SFSubsystem.h"
 #include "Net/UnrealNetwork.h"
-#include "Buildables/FGBuildablePowerPole.h"
-#include "Kismet/GameplayStatics.h"
 
 // ========================================
 // UFGRemoteCallObject Interface
@@ -258,122 +256,6 @@ void USFRCO::Client_ReceiveAuditResult_Implementation(FSFUpgradeAuditResult Resu
 			AuditService->InjectAuditResult(Result);
 		}
 	}
-}
-
-void USFRCO::Server_CommitPowerAutoConnectPlan_Implementation(
-	const TArray<FSFPowerPoleConnectionRequest>& PoleConnections,
-	const TArray<FSFPowerBuildingConnectionRequest>& BuildingConnections)
-{
-	USFSubsystem* Subsystem = USFSubsystem::Get(this);
-	if (!IsValid(Subsystem))
-	{
-		UE_LOG(LogSmartFoundations, Error, TEXT("[SFRCO] Server_CommitPowerAutoConnectPlan: Failed to get SFSubsystem"));
-		return;
-	}
-
-	Subsystem->ClearPlannedPoleConnections();
-	Subsystem->PlannedBuildingConnections.Empty();
-
-	for (const FSFPowerPoleConnectionRequest& Connection : PoleConnections)
-	{
-		Subsystem->AddPlannedPoleConnection(Connection.PoleA, Connection.PoleB);
-	}
-
-	for (const FSFPowerBuildingConnectionRequest& Connection : BuildingConnections)
-	{
-		if (IsValid(Connection.Building))
-		{
-			Subsystem->PlannedBuildingConnections.Add(Connection.Building, Connection.PoleLocation);
-		}
-	}
-
-	Subsystem->CommitBuildingConnections();
-
-	UWorld* World = Subsystem->GetWorld();
-	if (!World)
-	{
-		return;
-	}
-
-	TArray<AActor*> Poles;
-	UGameplayStatics::GetAllActorsOfClass(World, AFGBuildablePowerPole::StaticClass(), Poles);
-	for (AActor* Actor : Poles)
-	{
-		AFGBuildablePowerPole* Pole = Cast<AFGBuildablePowerPole>(Actor);
-		if (!IsValid(Pole))
-		{
-			continue;
-		}
-
-		const FVector PoleLocation = Pole->GetActorLocation();
-		bool bMatchesPlan = false;
-		for (const FSFPowerPoleConnectionRequest& Connection : PoleConnections)
-		{
-			if (PoleLocation.Equals(Connection.PoleA, 200.0f) || PoleLocation.Equals(Connection.PoleB, 200.0f))
-			{
-				bMatchesPlan = true;
-				break;
-			}
-		}
-
-		if (!bMatchesPlan)
-		{
-			for (const FSFPowerBuildingConnectionRequest& Connection : BuildingConnections)
-			{
-				if (PoleLocation.Equals(Connection.PoleLocation, 200.0f))
-				{
-					bMatchesPlan = true;
-					break;
-				}
-			}
-		}
-
-		if (bMatchesPlan)
-		{
-			Subsystem->RegisterGridBuiltPowerPole(Pole);
-			if (Subsystem->ArePowerConnectionsReady(Pole))
-			{
-				Subsystem->OnPowerPoleBuilt(Pole);
-			}
-			else
-			{
-				Subsystem->QueuePowerPoleForDeferredConnection(Pole);
-			}
-		}
-	}
-
-	UE_LOG(LogSmartFoundations, Log, TEXT("[SFRCO] Server_CommitPowerAutoConnectPlan: committed %d pole and %d building connections"),
-		PoleConnections.Num(), BuildingConnections.Num());
-}
-
-bool USFRCO::Server_CommitPowerAutoConnectPlan_Validate(
-	const TArray<FSFPowerPoleConnectionRequest>& PoleConnections,
-	const TArray<FSFPowerBuildingConnectionRequest>& BuildingConnections)
-{
-	constexpr int32 MaxPowerConnectionRequests = 512;
-	if (PoleConnections.Num() + BuildingConnections.Num() > MaxPowerConnectionRequests)
-	{
-		return false;
-	}
-
-	for (const FSFPowerPoleConnectionRequest& Connection : PoleConnections)
-	{
-		if (!Connection.PoleA.ContainsNaN() && !Connection.PoleB.ContainsNaN())
-		{
-			continue;
-		}
-		return false;
-	}
-
-	for (const FSFPowerBuildingConnectionRequest& Connection : BuildingConnections)
-	{
-		if (Connection.PoleLocation.ContainsNaN())
-		{
-			return false;
-		}
-	}
-
-	return true;
 }
 
 // ========================================

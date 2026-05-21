@@ -2,34 +2,9 @@
 
 #include "CoreMinimal.h"
 #include "FGRemoteCallObject.h"
-#include "Buildables/FGBuildable.h"
 #include "Features/Spacing/SFSpacingTypes.h"
 #include "Features/Upgrade/SFUpgradeExecutionService.h"
 #include "SFRCO.generated.h"
-
-USTRUCT()
-struct FSFPowerPoleConnectionRequest
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	FVector PoleA = FVector::ZeroVector;
-
-	UPROPERTY()
-	FVector PoleB = FVector::ZeroVector;
-};
-
-USTRUCT()
-struct FSFPowerBuildingConnectionRequest
-{
-	GENERATED_BODY()
-
-	UPROPERTY()
-	AFGBuildable* Building = nullptr;
-
-	UPROPERTY()
-	FVector PoleLocation = FVector::ZeroVector;
-};
 
 /**
  * Smart! Remote Call Object
@@ -127,12 +102,6 @@ public:
 	 */
 	UFUNCTION(Client, Reliable)
 	void Client_ReceiveAuditResult(FSFUpgradeAuditResult Result);
-
-	UFUNCTION(Server, Reliable, WithValidation)
-	void Server_CommitPowerAutoConnectPlan(
-		const TArray<FSFPowerPoleConnectionRequest>& PoleConnections,
-		const TArray<FSFPowerBuildingConnectionRequest>& BuildingConnections
-	);
 
 protected:
 	// ========================================

@@ -32,7 +32,6 @@
 #include "Buildables/FGBuildablePassthrough.h"
 #include "Features/PipeAutoConnect/SFPipeConnectorFinder.h"
 #include "Kismet/GameplayStatics.h"
-#include "SFRCO.h"
 
 USFAutoConnectService::USFAutoConnectService()
 	: Subsystem(nullptr)
@@ -4192,57 +4191,20 @@ void USFAutoConnectService::ClearAllPowerPreviews()
 	UE_LOG(LogSmartFoundations, Log, TEXT("⚡ ClearAllPowerPreviews: Clearing all power line previews (%d managers)"), 
 		PowerAutoConnectManagers.Num());
 	
-	// CRITICAL: Commit planned connections BEFORE clearing anything!
-	// This is called when build happens (hologram destroyed), so we need to preserve
-	// the planned connections for the deferred OnPowerPoleBuilt processing.
-	// The new hologram will trigger ProcessAllPowerPoles which would clear PlannedPoleConnections
-	// BEFORE OnActorSpawned can call CommitBuildingConnections, so we do it here first.
+	// CRITICAL: Preview cleanup never promotes plans into authoritative state.
+	// Actual Smart child wire construction registers server-side plans before the temp wire is destroyed.
 	if (Subsystem)
 	{
 		UWorld* World = Subsystem->GetWorld();
+		const bool bIsClient = World && World->GetNetMode() == NM_Client;
 		const bool bHasPowerPlan = Subsystem->PlannedPoleConnections.Num() > 0 || Subsystem->PlannedBuildingConnections.Num() > 0;
-		if (World && World->GetNetMode() == NM_Client && bHasPowerPlan)
+		if (bHasPowerPlan)
 		{
-			TArray<FSFPowerPoleConnectionRequest> PoleRequests;
-			PoleRequests.Reserve(Subsystem->PlannedPoleConnections.Num());
-			for (const TPair<FVector, FVector>& Connection : Subsystem->PlannedPoleConnections)
-			{
-				FSFPowerPoleConnectionRequest Request;
-				Request.PoleA = Connection.Key;
-				Request.PoleB = Connection.Value;
-				PoleRequests.Add(Request);
-			}
-
-			TArray<FSFPowerBuildingConnectionRequest> BuildingRequests;
-			BuildingRequests.Reserve(Subsystem->PlannedBuildingConnections.Num());
-			for (const TPair<TWeakObjectPtr<AFGBuildable>, FVector>& Connection : Subsystem->PlannedBuildingConnections)
-			{
-				if (Connection.Key.IsValid())
-				{
-					FSFPowerBuildingConnectionRequest Request;
-					Request.Building = Connection.Key.Get();
-					Request.PoleLocation = Connection.Value;
-					BuildingRequests.Add(Request);
-				}
-			}
-
-			APlayerController* PlayerController = UGameplayStatics::GetPlayerController(World, 0);
-			TArray<AActor*> RCOActors;
-			UGameplayStatics::GetAllActorsOfClass(World, USFRCO::StaticClass(), RCOActors);
-			for (AActor* Actor : RCOActors)
-			{
-				USFRCO* RCO = Cast<USFRCO>(Actor);
-				if (RCO && RCO->GetOuter() == PlayerController)
-				{
-					RCO->Server_CommitPowerAutoConnectPlan(PoleRequests, BuildingRequests);
-					UE_LOG(LogSmartFoundations, Log, TEXT("⚡ ClearAllPowerPreviews: Sent client power plan to server (poles=%d, buildings=%d)"),
-						PoleRequests.Num(), BuildingRequests.Num());
-					break;
-				}
-			}
+			UE_LOG(LogSmartFoundations, VeryVerbose, TEXT("⚡ ClearAllPowerPreviews: Clearing preview-only power plan (client=%d)"), bIsClient ? 1 : 0);
 		}
 
-		Subsystem->CommitBuildingConnections();
+		Subsystem->ClearPlannedPoleConnections();
+		Subsystem->PlannedBuildingConnections.Empty();
 	}
 	
 	// Clear all power lines from all managers

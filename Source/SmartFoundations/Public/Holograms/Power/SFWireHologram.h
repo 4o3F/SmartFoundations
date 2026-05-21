@@ -52,6 +52,8 @@ protected:
 	virtual void ConfigureActor(class AFGBuildable* inBuildable) const override;
 
 private:
+	void RegisterSmartPowerAutoConnectPlan() const;
+
 	/** Create and configure a wire mesh component with catenary curve */
 	void CreateWireMeshWithCatenary(const FVector& StartPos, const FVector& EndPos);
 

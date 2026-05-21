@@ -429,10 +429,22 @@ void USFSubsystem::OnDebugPrimaryFire()
 
 void USFSubsystem::CommitBuildingConnections()
 {
-	// Commit building connections (overwrite is fine for these)
-	UE_LOG(LogSmartFoundations, Warning, TEXT("⚡ CommitBuildingConnections: Copying %d planned building connections to committed"),
+	UWorld* World = GetWorld();
+	if (World && World->GetNetMode() == NM_Client)
+	{
+		UE_LOG(LogSmartFoundations, VeryVerbose, TEXT("⚡ CommitBuildingConnections: Skipping client-side power plan commit"));
+		return;
+	}
+
+	UE_LOG(LogSmartFoundations, Warning, TEXT("⚡ CommitBuildingConnections: Merging %d planned building connections into committed queue"),
 		PlannedBuildingConnections.Num());
-	CommittedBuildingConnections = PlannedBuildingConnections;
+	for (const TPair<TWeakObjectPtr<AFGBuildable>, FVector>& Connection : PlannedBuildingConnections)
+	{
+		if (Connection.Key.IsValid())
+		{
+			CommittedBuildingConnections.Add(Connection.Key, Connection.Value);
+		}
+	}
 	UE_LOG(LogSmartFoundations, Warning, TEXT("⚡ CommitBuildingConnections: CommittedBuildingConnections now has %d entries"),
 		CommittedBuildingConnections.Num());
 
@@ -466,6 +478,9 @@ void USFSubsystem::CommitBuildingConnections()
 		UE_LOG(LogSmartFoundations, VeryVerbose, TEXT("⚡ CommitBuildingConnections: No new pole connections (deferred queue: %d)"),
 			DeferredPoleConnections.Num());
 	}
+
+	PlannedBuildingConnections.Empty();
+	ClearPlannedPoleConnections();
 }
 
 void USFSubsystem::RemoveDeferredPoleConnection(const FVector& PoleA, const FVector& PoleB)
@@ -9005,22 +9020,48 @@ void USFSubsystem::OnActorSpawned(AActor* SpawnedActor)
 	AFGBuildablePowerPole* PowerPole = Cast<AFGBuildablePowerPole>(SpawnedActor);
 	if (PowerPole)
 	{
-		// CRITICAL TIMING: Poles spawn BEFORE hologram destruction calls CommitBuildingConnections!
-		// So we must check PlannedBuildingConnections AND PlannedPoleConnections as fallbacks.
+		UWorld* World = PowerPole->GetWorld();
+		if (World && World->GetNetMode() == NM_Client)
+		{
+			UE_LOG(LogSmartFoundations, VeryVerbose, TEXT(" OnActorSpawned: Skipping client-side power pole auto-connect state for %s"), *PowerPole->GetName());
+			return;
+		}
+
+		const FVector PowerPoleLocation = PowerPole->GetActorLocation();
+		const float PositionTolerance = 200.0f;
 		bool bHasBuildingConnections = CommittedBuildingConnections.Num() > 0;
 		bool bHasDeferredConnections = HasDeferredPoleConnections();
 		bool bHasPlannedPoleConnections = PlannedPoleConnections.Num() > 0;
 		bool bHasPlannedBuildingConnections = PlannedBuildingConnections.Num() > 0;
+		bool bMatchesPlannedPowerPlan = false;
 
-		// If we have ANY planned connections but nothing committed yet, commit NOW
-		// This handles the race condition where pole spawns before hologram destruction
-		if ((bHasPlannedPoleConnections || bHasPlannedBuildingConnections) &&
-		    !bHasBuildingConnections && !bHasDeferredConnections)
+		for (const TPair<FVector, FVector>& Connection : PlannedPoleConnections)
 		{
-			UE_LOG(LogSmartFoundations, VeryVerbose, TEXT(" OnActorSpawned: Early commit - pole spawned before hologram destruction! PlannedBuildings=%d, PlannedPoles=%d"),
+			if (PowerPoleLocation.Equals(Connection.Key, PositionTolerance) || PowerPoleLocation.Equals(Connection.Value, PositionTolerance))
+			{
+				bMatchesPlannedPowerPlan = true;
+				break;
+			}
+		}
+
+		if (!bMatchesPlannedPowerPlan)
+		{
+			for (const TPair<TWeakObjectPtr<AFGBuildable>, FVector>& Connection : PlannedBuildingConnections)
+			{
+				if (PowerPoleLocation.Equals(Connection.Value, PositionTolerance))
+				{
+					bMatchesPlannedPowerPlan = true;
+					break;
+				}
+			}
+		}
+
+		if ((bHasPlannedPoleConnections || bHasPlannedBuildingConnections) &&
+			!bHasBuildingConnections && !bHasDeferredConnections && bMatchesPlannedPowerPlan)
+		{
+			UE_LOG(LogSmartFoundations, VeryVerbose, TEXT(" OnActorSpawned: Early commit for matching Smart power pole. PlannedBuildings=%d, PlannedPoles=%d"),
 				PlannedBuildingConnections.Num(), PlannedPoleConnections.Num());
 			CommitBuildingConnections();
-			// Refresh the flags after commit
 			bHasBuildingConnections = CommittedBuildingConnections.Num() > 0;
 			bHasDeferredConnections = HasDeferredPoleConnections();
 		}
@@ -9033,13 +9074,40 @@ void USFSubsystem::OnActorSpawned(AActor* SpawnedActor)
 			return;
 		}
 
+		bool bMatchesCommittedPowerPlan = false;
+		for (const TPair<FVector, FVector>& Connection : DeferredPoleConnections)
+		{
+			if (PowerPoleLocation.Equals(Connection.Key, PositionTolerance) || PowerPoleLocation.Equals(Connection.Value, PositionTolerance))
+			{
+				bMatchesCommittedPowerPlan = true;
+				break;
+			}
+		}
+
+		if (!bMatchesCommittedPowerPlan)
+		{
+			for (const TPair<TWeakObjectPtr<AFGBuildable>, FVector>& Connection : CommittedBuildingConnections)
+			{
+				if (PowerPoleLocation.Equals(Connection.Value, PositionTolerance))
+				{
+					bMatchesCommittedPowerPlan = true;
+					break;
+				}
+			}
+		}
+
+		if (!bMatchesCommittedPowerPlan)
+		{
+			UE_LOG(LogSmartFoundations, VeryVerbose, TEXT(" OnActorSpawned: Power pole %s skipped - it does not match committed Smart power plan"), *PowerPole->GetName());
+			return;
+		}
+
 		UE_LOG(LogSmartFoundations, VeryVerbose, TEXT(" OnActorSpawned: Power pole detected - Buildings=%d, DeferredPoleConnections=%d"),
 			CommittedBuildingConnections.Num(),
 			DeferredPoleConnections.Num());
 
 		UE_LOG(LogSmartFoundations, VeryVerbose, TEXT(" OnActorSpawned: Power pole built - checking for deferred auto-connections"));
 
-		// Register as grid-built pole (guard above ensures we only get here for Smart! placed poles)
 		RegisterGridBuiltPowerPole(PowerPole);
 
 		// Check if power connections are ready (like arrow asset system)
@@ -9372,6 +9440,13 @@ void USFSubsystem::OnPowerPoleBuilt(AFGBuildablePowerPole* BuiltPole)
 		return;
 	}
 
+	UWorld* World = BuiltPole->GetWorld();
+	if (World && World->GetNetMode() == NM_Client)
+	{
+		UE_LOG(LogSmartFoundations, VeryVerbose, TEXT("⚡ OnPowerPoleBuilt: Skipping client-side power auto-connect state for %s"), *BuiltPole->GetName());
+		return;
+	}
+
 	UE_LOG(LogSmartFoundations, VeryVerbose, TEXT("⚡ OnPowerPoleBuilt: Power pole built - creating connections"));
 
 	// NOTE: Wire costs are now represented by real child wire holograms (preview children).
@@ -9423,6 +9498,13 @@ void USFSubsystem::QueuePowerPoleForDeferredConnection(AFGBuildablePowerPole* Po
 		return;
 	}
 
+	UWorld* World = PowerPole->GetWorld();
+	if (World && World->GetNetMode() == NM_Client)
+	{
+		UE_LOG(LogSmartFoundations, VeryVerbose, TEXT("⚡ QueuePowerPoleForDeferredConnection: Skipping client-side queue for %s"), *PowerPole->GetName());
+		return;
+	}
+
 	// Add to pending queue if not already there
 	if (!PendingPowerPoleConnections.Contains(PowerPole))
 	{
@@ -9438,10 +9520,10 @@ void USFSubsystem::QueuePowerPoleForDeferredConnection(AFGBuildablePowerPole* Po
 			*PowerPole->GetName(), PendingPowerPoleConnections.Num());
 
 		// Set timer to process deferred connections (like arrow system)
-		UWorld* World = GetWorld();
-		if (World && !PowerPoleDeferredTimer.IsValid())
+		UWorld* TimerWorld = GetWorld();
+		if (TimerWorld && !PowerPoleDeferredTimer.IsValid())
 		{
-			World->GetTimerManager().SetTimer(
+			TimerWorld->GetTimerManager().SetTimer(
 				PowerPoleDeferredTimer,
 				this,
 				&USFSubsystem::ProcessDeferredPowerPoleConnections,
@@ -9456,6 +9538,18 @@ void USFSubsystem::QueuePowerPoleForDeferredConnection(AFGBuildablePowerPole* Po
 
 void USFSubsystem::ProcessDeferredPowerPoleConnections()
 {
+	UWorld* World = GetWorld();
+	if (World && World->GetNetMode() == NM_Client)
+	{
+		PendingPowerPoleConnections.Empty();
+		if (PowerPoleDeferredTimer.IsValid())
+		{
+			World->GetTimerManager().ClearTimer(PowerPoleDeferredTimer);
+			PowerPoleDeferredTimer.Invalidate();
+		}
+		return;
+	}
+
 	if (PendingPowerPoleConnections.Num() == 0)
 	{
 		// Clear timer when no pending poles

@@ -4,7 +4,38 @@
 #include "Buildables/FGBuildablePowerPole.h"
 #include "Hologram/FGHologram.h"
 #include "Components/StaticMeshComponent.h"
+#include "FGCircuitConnectionComponent.h"
 #include "Kismet/GameplayStatics.h"
+#include "Subsystem/SFSubsystem.h"
+
+static void ProcessBuiltPowerPoleNearLocation(USFSubsystem* Subsystem, UWorld* World, const FVector& Location)
+{
+	if (!Subsystem || !World)
+	{
+		return;
+	}
+
+	TArray<AActor*> FoundActors;
+	UGameplayStatics::GetAllActorsOfClass(World, AFGBuildablePowerPole::StaticClass(), FoundActors);
+	for (AActor* Actor : FoundActors)
+	{
+		AFGBuildablePowerPole* Pole = Cast<AFGBuildablePowerPole>(Actor);
+		if (!IsValid(Pole) || !Pole->GetActorLocation().Equals(Location, 200.0f))
+		{
+			continue;
+		}
+
+		Subsystem->RegisterGridBuiltPowerPole(Pole);
+		if (Subsystem->ArePowerConnectionsReady(Pole))
+		{
+			Subsystem->OnPowerPoleBuilt(Pole);
+		}
+		else
+		{
+			Subsystem->QueuePowerPoleForDeferredConnection(Pole);
+		}
+	}
+}
 
 ASFWireHologram::ASFWireHologram()
 	: PreviewWireMesh(nullptr)
@@ -207,6 +238,49 @@ void ASFWireHologram::SetWireEndpoints(const FVector& Start, const FVector& End)
 	CachedEndPos = End;
 }
 
+void ASFWireHologram::RegisterSmartPowerAutoConnectPlan() const
+{
+	UWorld* World = GetWorld();
+	if (!World || World->GetNetMode() == NM_Client)
+	{
+		return;
+	}
+
+	USFSubsystem* Subsystem = USFSubsystem::Get(this);
+	if (!IsValid(Subsystem))
+	{
+		UE_LOG(LogSmartFoundations, Warning, TEXT(" SFWireHologram::RegisterSmartPowerAutoConnectPlan - missing subsystem"));
+		return;
+	}
+
+	AFGHologram* ParentHologram = GetParentHologram();
+	const FVector SourcePoleLocation = ParentHologram ? ParentHologram->GetActorLocation() : CachedStartPos;
+	UFGCircuitConnectionComponent* EndConnection = GetConnection(1);
+	AActor* EndOwner = EndConnection ? EndConnection->GetOwner() : nullptr;
+	if (!EndOwner)
+	{
+		UE_LOG(LogSmartFoundations, VeryVerbose, TEXT(" SFWireHologram::RegisterSmartPowerAutoConnectPlan - missing end owner"));
+		return;
+	}
+
+	if (AFGHologram* TargetPoleHologram = Cast<AFGHologram>(EndOwner))
+	{
+		const FVector TargetPoleLocation = TargetPoleHologram->GetActorLocation();
+		Subsystem->AddPlannedPoleConnection(SourcePoleLocation, TargetPoleLocation);
+		Subsystem->CommitBuildingConnections();
+		ProcessBuiltPowerPoleNearLocation(Subsystem, World, SourcePoleLocation);
+		ProcessBuiltPowerPoleNearLocation(Subsystem, World, TargetPoleLocation);
+		return;
+	}
+
+	if (AFGBuildable* TargetBuilding = Cast<AFGBuildable>(EndOwner))
+	{
+		Subsystem->PlannedBuildingConnections.Add(TargetBuilding, SourcePoleLocation);
+		Subsystem->CommitBuildingConnections();
+		ProcessBuiltPowerPoleNearLocation(Subsystem, World, SourcePoleLocation);
+	}
+}
+
 void ASFWireHologram::ConfigureActor(AFGBuildable* inBuildable) const
 {
 	// Issue #244: DEFERRED CONNECTION APPROACH
@@ -230,6 +304,7 @@ void ASFWireHologram::ConfigureActor(AFGBuildable* inBuildable) const
 
 	if (Tags.Contains(FName(TEXT("SF_PowerAutoConnectChild"))))
 	{
+		RegisterSmartPowerAutoConnectPlan();
 		UE_LOG(LogSmartFoundations, VeryVerbose, TEXT(" SFWireHologram::ConfigureActor - Destroying temporary Smart power child wire; deferred system will create the real wire"));
 		Wire->Destroy();
 		return;
