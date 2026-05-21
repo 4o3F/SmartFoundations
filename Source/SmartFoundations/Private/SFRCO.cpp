@@ -271,6 +271,9 @@ void USFRCO::Server_CommitPowerAutoConnectPlan_Implementation(
 		return;
 	}
 
+	Subsystem->ClearPlannedPoleConnections();
+	Subsystem->PlannedBuildingConnections.Empty();
+
 	for (const FSFPowerPoleConnectionRequest& Connection : PoleConnections)
 	{
 		Subsystem->AddPlannedPoleConnection(Connection.PoleA, Connection.PoleB);
@@ -328,7 +331,14 @@ void USFRCO::Server_CommitPowerAutoConnectPlan_Implementation(
 		if (bMatchesPlan)
 		{
 			Subsystem->RegisterGridBuiltPowerPole(Pole);
-			Subsystem->OnPowerPoleBuilt(Pole);
+			if (Subsystem->ArePowerConnectionsReady(Pole))
+			{
+				Subsystem->OnPowerPoleBuilt(Pole);
+			}
+			else
+			{
+				Subsystem->QueuePowerPoleForDeferredConnection(Pole);
+			}
 		}
 	}
 
